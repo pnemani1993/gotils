@@ -1,0 +1,47 @@
+package stack
+
+import (
+	"fmt"
+	"log"
+	"sync"
+)
+
+type Stack struct {
+	stackArray []any
+	size       int
+	mu         sync.Mutex
+}
+
+func New() *Stack {
+	return &Stack{stackArray: make([]any, 0), size: 0}
+}
+
+func (stack *Stack) Push(value any) {
+	stack.mu.Lock()
+	stack.stackArray = append(stack.stackArray, value)
+	stack.size = stack.size + 1
+	stack.mu.Unlock()
+}
+
+func (stack *Stack) Pop() (value any) {
+	stack.mu.Lock()
+	if stack.size == 0 {
+		log.Fatal("The stack is empty. Nothing to return")
+	}
+	value = stack.stackArray[stack.size-1]
+	stack.size = stack.size - 1
+	stack.stackArray = stack.stackArray[:stack.size]
+	stack.mu.Unlock()
+	return value
+}
+
+func (stack *Stack) Size() int {
+	return stack.size
+}
+
+func (stack *Stack) Print() {
+	for _, value := range stack.stackArray {
+		fmt.Print(value, ", ")
+	}
+	fmt.Print("\n")
+}
