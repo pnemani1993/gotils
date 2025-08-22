@@ -1,8 +1,8 @@
 package queue
 
 import (
+	"errors"
 	"fmt"
-	"log"
 	"sync"
 )
 
@@ -23,16 +23,16 @@ func (queue *Queue) Enqueue(value any) {
 	queue.mu.Unlock()
 }
 
-func (queue *Queue) Dequeue() (value any) {
+func (queue *Queue) Dequeue() (any, error) {
 	queue.mu.Lock()
 	if queue.size == 0 {
-		log.Fatal("The queue is empty. Nothing to return")
+		return nil, errors.New("queue is empty. Nothing to return")
 	}
-	value = queue.queueArray[0]
+	value := queue.queueArray[0]
 	queue.queueArray = queue.queueArray[1:queue.size]
 	queue.size = queue.size - 1
 	queue.mu.Unlock()
-	return value
+	return value, nil
 }
 
 func (queue *Queue) Size() int {
