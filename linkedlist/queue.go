@@ -3,6 +3,7 @@ package linkedlist
 type Queue interface {
 	Enqueue(value any)
 	Dequeue() (any, error)
+	PeekQueue() (any, error)
 	Size() int
 	PrintQueue()
 }
@@ -17,6 +18,10 @@ func (queue *NodeList) Enqueue(value any) {
 
 func (queue *NodeList) Dequeue() (any, error) {
 	return queue.RemoveFirst()
+}
+
+func (queue *NodeList) PeekQueue() (any, error) {
+	return queue.GetFirst()
 }
 
 func (queue NodeList) PrintQueue() {

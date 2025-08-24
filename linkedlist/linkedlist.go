@@ -38,31 +38,30 @@ func New() LinkedList {
 func (dll *NodeList) Insert(value any) {
 	newNode := &Node{value: value}
 	dll.mu.Lock()
+	defer dll.mu.Unlock()
 	if dll.size == 0 {
 		dll.head = newNode
 		dll.tail = newNode
 		dll.size = 1
-		dll.mu.Unlock()
 		return
 	}
 	dll.tail.next = newNode
 	newNode.previous = dll.tail
 	dll.tail = newNode
 	dll.size = dll.size + 1
-	dll.mu.Unlock()
 }
 
 func (dll *NodeList) RemoveFirst() (any, error) {
 	if dll.size == 0 {
-		return nil, errors.New("linkedList is empty. Nothing to remove")
+		return nil, errors.New("empty linkedList")
 	}
 	dll.mu.Lock()
+	defer dll.mu.Unlock()
 	node := dll.head
 	returnValue := node.value
 	if dll.size == 1 {
 		dll.size = 0
 		node = nil
-		dll.mu.Unlock()
 		return returnValue, nil
 	}
 	dll.head = dll.head.next
@@ -70,35 +69,39 @@ func (dll *NodeList) RemoveFirst() (any, error) {
 	node.next = nil
 	node = nil
 	dll.size = dll.size - 1
-	dll.mu.Unlock()
 	return returnValue, nil
 }
 
 func (dll *NodeList) RemoveLast() (any, error) {
 	if dll.size == 0 {
-		return nil, errors.New("linkedList is empty. Nothing to remove")
+		return nil, errors.New("empty linkedList")
 	}
 	dll.mu.Lock()
+	defer dll.mu.Unlock()
 	node := dll.tail
 	returnValue := node.value
 	dll.tail = dll.tail.previous
 	if dll.size == 1 {
 		dll.size = 0
 		node = nil
-		dll.mu.Unlock()
 		return returnValue, nil
 	}
 	dll.tail.next = nil
 	node.previous = nil
 	node = nil
 	dll.size = dll.size - 1
-	dll.mu.Unlock()
 	return returnValue, nil
 }
 
 func (dll *NodeList) Remove(index int) (any, error) {
+	dll.mu.Lock()
+	defer dll.mu.Unlock()
 	if dll.size == 0 || index >= dll.size || index < 0 {
-		return nil, errors.New("Invalid index provided or the list is empty.")
+		if dll.size == 0 {
+			return nil, errors.New("empty linkedlist")
+		} else {
+			return nil, errors.New("invalid index")
+		}
 	}
 	if index == 0 {
 		return dll.RemoveFirst()
@@ -106,8 +109,6 @@ func (dll *NodeList) Remove(index int) (any, error) {
 	if index == dll.size-1 {
 		return dll.RemoveLast()
 	}
-
-	dll.mu.Lock()
 
 	node := dll.head
 	for i := 0; i < index; i = i + 1 {
@@ -126,27 +127,33 @@ func (dll *NodeList) Remove(index int) (any, error) {
 	node.previous = nil
 	node = &Node{}
 	dll.size = dll.size - 1
-	dll.mu.Unlock()
 	return returnValue, nil
 }
 
 func (dll NodeList) Size() int {
-	return dll.size
+	dll.mu.Lock()
+	returnSize := dll.size
+	dll.mu.Unlock()
+	return returnSize
 }
 
 func (dll NodeList) Get(index int) (any, error) {
-	if dll.size == 0 || index >= dll.size || index < 0 {
-		return nil, errors.New("Invalid index provided or the list is empty.")
-	}
 	dll.mu.Lock()
+	defer dll.mu.Unlock()
+	if dll.size == 0 || index >= dll.size || index < 0 {
+		if dll.size == 0 {
+			return nil, errors.New("empty linkedlist")
+		} else {
+			return nil, errors.New("invalid index")
+		}
+	}
+
 	if index == 0 {
 		returnValue := dll.head.value
-		dll.mu.Unlock()
 		return returnValue, nil
 	}
 	if index == dll.size-1 {
 		returnValue := dll.tail.value
-		dll.mu.Unlock()
 		return returnValue, nil
 	}
 	node := dll.head
@@ -154,7 +161,6 @@ func (dll NodeList) Get(index int) (any, error) {
 		node = node.next
 	}
 	returnValue := node.value
-	dll.mu.Unlock()
 	return returnValue, nil
 }
 
@@ -168,14 +174,13 @@ func (dll NodeList) GetLast() (any, error) {
 
 func (dll NodeList) Print() {
 	dll.mu.Lock()
+	defer dll.mu.Unlock()
 	if dll.size == 0 {
-		fmt.Print("The linkedlist is empty")
-		dll.mu.Unlock()
+		fmt.Print("empty linkedlist")
 		return
 	}
 	if dll.size == 1 {
 		fmt.Print(dll.head.value, "\n")
-		dll.mu.Unlock()
 		return
 	}
 	node := dll.head
@@ -184,19 +189,17 @@ func (dll NodeList) Print() {
 		node = node.next
 	}
 	fmt.Print("\n")
-	dll.mu.Unlock()
 }
 
 func (dll NodeList) PrintBackwards() {
 	dll.mu.Lock()
+	defer dll.mu.Unlock()
 	if dll.size == 0 {
-		fmt.Print("The linkedlist is empty")
-		dll.mu.Unlock()
+		fmt.Println("empty linkedlist")
 		return
 	}
 	if dll.size == 1 {
 		fmt.Print(dll.head.value, "\n")
-		dll.mu.Unlock()
 		return
 	}
 	node := dll.tail
@@ -205,5 +208,4 @@ func (dll NodeList) PrintBackwards() {
 		node = node.previous
 	}
 	fmt.Print("\n")
-	dll.mu.Unlock()
 }
