@@ -1,8 +1,8 @@
 package stack
 
 import (
+	"errors"
 	"fmt"
-	"log"
 	"sync"
 )
 
@@ -18,28 +18,34 @@ func New() *Stack {
 
 func (stack *Stack) Push(value any) {
 	stack.mu.Lock()
+	defer stack.mu.Unlock()
 	stack.stackArray = append(stack.stackArray, value)
 	stack.size = stack.size + 1
-	stack.mu.Unlock()
 }
 
-func (stack *Stack) Pop() (value any) {
+func (stack *Stack) Pop() (any, error) {
 	stack.mu.Lock()
+	defer stack.mu.Unlock()
 	if stack.size == 0 {
-		log.Fatal("The stack is empty. Nothing to return")
+		return nil, errors.New("empty stack")
 	}
-	value = stack.stackArray[stack.size-1]
+	value := stack.stackArray[stack.size-1]
 	stack.size = stack.size - 1
 	stack.stackArray = stack.stackArray[:stack.size]
-	stack.mu.Unlock()
-	return value
+	return value, nil
 }
 
-func (stack *Stack) Size() int {
+func (stack Stack) Size() int {
 	return stack.size
 }
 
-func (stack *Stack) Print() {
+func (stack Stack) Print() {
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	if stack.size == 0 {
+		fmt.Println("empty stack")
+		return
+	}
 	for _, value := range stack.stackArray {
 		fmt.Print(value, ", ")
 	}
