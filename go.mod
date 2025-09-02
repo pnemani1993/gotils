@@ -1,4 +1,4 @@
-module pnemani1993/gotils
+module github.com/pnemani1993/gotils
 
 go 1.24.1
 
