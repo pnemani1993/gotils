@@ -24,12 +24,12 @@ func (path *Path) Add(subPath string) error {
 	return nil
 }
 
-func (path *Path) Addf(subPath string, values ...string) error {
+func (path *Path) Addf(subPath string, values []string) error {
 	if strings.Count(subPath, "{") != strings.Count(subPath, "}") || strings.Count(subPath, "{") != len(values) {
 		if strings.Count(subPath, "{") != strings.Count(subPath, "}") {
 			return fmt.Errorf("Invalid path provided: %s", subPath)
 		} else {
-			return fmt.Errorf("All the substitutions are not provided: %s", values)
+			return fmt.Errorf("All the substitutions are not provided")
 		}
 	}
 

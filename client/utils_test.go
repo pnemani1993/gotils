@@ -43,7 +43,7 @@ func TestAddInvalid(t *testing.T) {
 
 func TestAddf(t *testing.T) {
 	path := NewPath()
-	path.Addf("/path1/{path2}/path3/", "value")
+	path.Addf("/path1/{path2}/path3/", []string{"value"})
 	expected := "path1/value/path3"
 	actual := path.paths[0]
 
