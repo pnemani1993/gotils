@@ -10,18 +10,24 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+
+	"io"
+
+	"bytes"
+	"encoding/json"
 
 	"golang.org/x/crypto/pkcs12"
 )
 
 type HttpX struct {
-	HttpRequest  *http.Request
-	HttpResponse http.Response
-	TlsConfig    *tls.Config
-	wg           sync.WaitGroup
-	Error        []error
+	HttpRequest     *http.Request
+	HttpResponse    http.Response
+	TransportConfig *http.Transport
+	wg              sync.WaitGroup
+	Error           []error
 }
 
 type HttpXBuilder struct {
@@ -31,6 +37,7 @@ type HttpXBuilder struct {
 	HttpRequest  *http.Request
 	HttpResponse http.Response
 	TlsConfig    *tls.Config
+	ProxyUrl     string
 	wg           sync.WaitGroup
 	Error        []error
 }
@@ -55,6 +62,11 @@ func NewHttpXBuilder() *HttpXBuilder {
 // BaseUrl("https://hosturl.domain:port")
 func (builder *HttpXBuilder) BaseUrl(url string) *HttpXBuilder {
 	url, _ = strings.CutSuffix(url, "/")
+
+	if strings.Contains(url, "//localhost") {
+		url = strings.Replace(url, "//localhost", "//127.0.0.1", 1)
+	}
+
 	if strings.HasPrefix(url, "https://") {
 		url, _ = strings.CutPrefix(url, "https://")
 		builder.Url.Scheme = "https"
@@ -64,7 +76,14 @@ func (builder *HttpXBuilder) BaseUrl(url string) *HttpXBuilder {
 	} else {
 		builder.Url.Scheme = "https"
 	}
+
+	if index := strings.Index(url, "/"); index != -1 {
+		builder.UrlPaths.Add(url[index:])
+		url = url[:index]
+	}
+
 	builder.Url.Host = url
+
 	return builder
 }
 
@@ -108,6 +127,24 @@ func (builder *HttpXBuilder) Get() *HttpXBuilder {
 
 func (builder *HttpXBuilder) Post() *HttpXBuilder {
 	builder.HttpRequest.Method = "POST"
+	builder.HttpRequest.ContentLength = -1
+	return builder
+}
+
+func (builder *HttpXBuilder) WithStringAsBody(body string) *HttpXBuilder {
+	requestBody := io.NopCloser(strings.NewReader(body))
+	builder.HttpRequest.Body = requestBody
+	return builder
+}
+
+func (builder *HttpXBuilder) WithStructAsBody(body any) *HttpXBuilder {
+	jsonData, err := json.Marshal(body)
+	if err != nil {
+		builder.Error = append(builder.Error, err)
+		return builder
+	}
+	requestBody := io.NopCloser(bytes.NewReader(jsonData))
+	builder.HttpRequest.Body = requestBody
 	return builder
 }
 
@@ -118,6 +155,7 @@ func (builder *HttpXBuilder) Delete() *HttpXBuilder {
 
 func (builder *HttpXBuilder) Put() *HttpXBuilder {
 	builder.HttpRequest.Method = "PUT"
+	builder.HttpRequest.ContentLength = -1
 	return builder
 }
 
@@ -148,11 +186,31 @@ func (builder *HttpXBuilder) TLSConfigPKCS12(path string, password string) *Http
 	return builder
 }
 
+func (builder *HttpXBuilder) SetProxy(proxyUrl string) *HttpXBuilder {
+	builder.ProxyUrl = proxyUrl
+	return builder
+}
+
 func (builder *HttpXBuilder) Build() (*HttpX, error) {
 	builder.Url.Path = builder.UrlPaths.GetPath()
 	builder.HttpRequest.URL = builder.Url
 	builder.HttpRequest.Header = builder.Headers
-	builder.HttpRequest.ContentLength = -1
+
+	if (builder.HttpRequest.Method == "GET" || builder.HttpRequest.Method == "DELETE") && builder.HttpRequest.Body != nil {
+		builder.Error = append(builder.Error, errors.New("request body should not be provided for the given request method"))
+	} else if (builder.HttpRequest.Method == "POST" || builder.HttpRequest.Method == "PUT" || builder.HttpRequest.Method == "PATCH") && builder.HttpRequest.Body == nil {
+		builder.Error = append(builder.Error, errors.New("request body should be provided for the given request method"))
+	}
+
+	transport := &http.Transport{
+		TLSClientConfig: builder.TlsConfig,
+	}
+
+	proxy, exists := builder.getProxy()
+	if exists {
+		transport.Proxy = http.ProxyURL(proxy)
+	}
+
 	if len(builder.Error) != 0 {
 		var errorString string
 		for _, erro := range builder.Error {
@@ -162,18 +220,16 @@ func (builder *HttpXBuilder) Build() (*HttpX, error) {
 	}
 
 	return &HttpX{
-		HttpRequest: builder.HttpRequest,
-		Error:       builder.Error,
-		TlsConfig:   builder.TlsConfig,
+		HttpRequest:     builder.HttpRequest,
+		Error:           builder.Error,
+		TransportConfig: transport,
 	}, nil
 }
 
 func (httpX *HttpX) Send() (*http.Response, error) {
-	transport := &http.Transport{
-		TLSClientConfig: httpX.TlsConfig,
-	}
+
 	httpClient := &http.Client{
-		Transport: transport,
+		Transport: httpX.TransportConfig,
 	}
 	response, err := httpClient.Do(httpX.HttpRequest)
 	if err != nil {
@@ -232,4 +288,61 @@ func tlsConfigPKCS12(path string, password string) *tls.Config {
 	}
 
 	return tlsConfig
+}
+
+func (builder *HttpXBuilder) getProxy() (*url.URL, bool) {
+	if len(builder.ProxyUrl) == 0 {
+
+		if no_proxy, exists := os.LookupEnv("NO_PROXY"); exists {
+			no_proxy_urls := strings.Split(no_proxy, ",")
+			for _, value := range no_proxy_urls {
+				if strings.HasPrefix(builder.Url.Host, value) {
+					return nil, false
+				}
+			}
+		}
+
+		if builder.Url.Scheme == "https" {
+			if proxy, exists := os.LookupEnv("HTTPS_PROXY"); exists {
+				proxy, err := url.Parse(proxy) // Replace with your proxy details
+				if err != nil {
+					builder.Error = append(builder.Error, errors.New("proxy error"))
+					return nil, false
+				}
+				return proxy, true
+			} else if proxy, exists := os.LookupEnv("ALL_PROXY"); exists {
+				proxy, err := url.Parse(proxy) // Replace with your proxy details
+				if err != nil {
+					builder.Error = append(builder.Error, errors.New("proxy error"))
+					return nil, false
+				}
+				return proxy, true
+			}
+		} else if builder.Url.Scheme == "http" {
+			if proxy, exists := os.LookupEnv("HTTP_PROXY"); exists {
+				proxy, err := url.Parse(proxy) // Replace with your proxy details
+				if err != nil {
+					builder.Error = append(builder.Error, errors.New("proxy error"))
+					return nil, false
+				}
+				return proxy, true
+			} else if proxy, exists := os.LookupEnv("ALL_PROXY"); exists {
+				proxy, err := url.Parse(proxy) // Replace with your proxy details
+				if err != nil {
+					builder.Error = append(builder.Error, errors.New("proxy error"))
+					return nil, false
+				}
+				return proxy, true
+			}
+		}
+
+	} else {
+		proxyUrl, err := url.Parse(builder.ProxyUrl)
+		if err != nil {
+			builder.Error = append(builder.Error, errors.New("proxy error"))
+			return nil, false
+		}
+		return proxyUrl, true
+	}
+	return nil, false
 }
