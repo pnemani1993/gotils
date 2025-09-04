@@ -15,7 +15,7 @@ func NewPath() Path {
 
 func (path *Path) Add(subPath string) error {
 	if strings.ContainsAny(subPath, "{") && strings.ContainsAny(subPath, "}") {
-		return fmt.Errorf("Invalid method usage. See 'Addf' function")
+		return &InvalidOperation{1001, "Invalid method usage. See 'Addf' function"}
 	}
 	subPath, _ = strings.CutPrefix(subPath, "/")
 	subPath, _ = strings.CutSuffix(subPath, "/")
@@ -27,9 +27,9 @@ func (path *Path) Add(subPath string) error {
 func (path *Path) Addf(subPath string, values []string) error {
 	if strings.Count(subPath, "{") != strings.Count(subPath, "}") || strings.Count(subPath, "{") != len(values) {
 		if strings.Count(subPath, "{") != strings.Count(subPath, "}") {
-			return fmt.Errorf("Invalid path provided: %s", subPath)
+			return &InvalidInput{1001, "invalid path provided", subPath}
 		} else {
-			return fmt.Errorf("All the substitutions are not provided")
+			return &InvalidInput{1002, "all the required substitutions are not provided", subPath}
 		}
 	}
 
@@ -59,4 +59,32 @@ func patternSubstituter(str string, subString string) string {
 
 	returnString := str[0:startIndex] + subString + str[endIndex+1:]
 	return returnString
+}
+
+type InvalidOperation struct {
+	code    int
+	message string
+}
+
+func (err *InvalidOperation) Error() string {
+	return fmt.Sprintf("Error %d: %s", err.code, err.message)
+}
+
+type InvalidInput struct {
+	code    int
+	message string
+	input   string
+}
+
+func (err *InvalidInput) Error() string {
+	return fmt.Sprintf("Error %d: %s\n\tInput: %s", err.code, err.message, err.input)
+}
+
+type HttpError struct {
+	statusCode int
+	message    string
+}
+
+func (err *HttpError) Error() string {
+	return fmt.Sprintf("Error %d: %s", err.statusCode, err.message)
 }

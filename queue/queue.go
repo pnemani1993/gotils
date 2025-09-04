@@ -1,7 +1,6 @@
 package queue
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 )
@@ -27,7 +26,7 @@ func (queue *Queue) Dequeue() (any, error) {
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
 	if queue.size == 0 {
-		return nil, errors.New("empty queue")
+		return nil, &InvalidOperation{1001, "empty queue"}
 	}
 	value := queue.queueArray[0]
 	queue.queueArray = queue.queueArray[1:queue.size]
@@ -50,4 +49,13 @@ func (queue *Queue) Print() {
 		fmt.Print(value, ", ")
 	}
 	fmt.Print("\n")
+}
+
+type InvalidOperation struct {
+	code    int
+	message string
+}
+
+func (err *InvalidOperation) Error() string {
+	return fmt.Sprintf("Error %d: %s", err.code, err.message)
 }

@@ -5,9 +5,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"fmt"
-	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,27 +23,28 @@ import (
 
 type HttpX struct {
 	HttpRequest     *http.Request
-	HttpResponse    http.Response
+	HttpResponse    *http.Response
 	TransportConfig *http.Transport
 	wg              sync.WaitGroup
-	Error           []error
 }
 
 type HttpXBuilder struct {
-	UrlPaths     Path
-	Url          *url.URL
-	Headers      map[string][]string
-	HttpRequest  *http.Request
-	HttpResponse http.Response
-	TlsConfig    *tls.Config
-	ProxyUrl     string
-	wg           sync.WaitGroup
-	Error        []error
+	UrlPaths      Path
+	Url           *url.URL
+	Headers       map[string][]string
+	HttpRequest   *http.Request
+	TlsConfig     *tls.Config
+	ProxyUrl      string
+	wg            sync.WaitGroup
+	Error         *ClientError
+	logger        *log.Logger
+	isPeekEnabled bool
 }
 
 func NewHttpXBuilder() *HttpXBuilder {
 	requestContext, err := http.NewRequestWithContext(context.TODO(), "", "", nil)
 	if err != nil {
+		log.Default()
 		fmt.Println("Error in the context")
 		return nil
 	}
@@ -54,7 +54,7 @@ func NewHttpXBuilder() *HttpXBuilder {
 		Url:         &url.URL{},
 		Headers:     make(map[string][]string),
 		HttpRequest: requestContext,
-		Error:       make([]error, 0, 5),
+		Error:       &ClientError{errorsList: make([]error, 0, 5)},
 	}
 }
 
@@ -63,9 +63,7 @@ func NewHttpXBuilder() *HttpXBuilder {
 func (builder *HttpXBuilder) BaseUrl(url string) *HttpXBuilder {
 	url, _ = strings.CutSuffix(url, "/")
 
-	if strings.Contains(url, "//localhost") {
-		url = strings.Replace(url, "//localhost", "//127.0.0.1", 1)
-	}
+	url = strings.Replace(url, "//localhost", "//127.0.0.1", 1)
 
 	if strings.HasPrefix(url, "https://") {
 		url, _ = strings.CutPrefix(url, "https://")
@@ -91,7 +89,7 @@ func (builder *HttpXBuilder) BaseUrl(url string) *HttpXBuilder {
 func (builder *HttpXBuilder) SetPath(path string) *HttpXBuilder {
 	err := builder.UrlPaths.Add(path)
 	if err != nil {
-		builder.Error = append(builder.Error, err)
+		builder.Error.errorsList = append(builder.Error.errorsList, err)
 	}
 	return builder
 }
@@ -100,7 +98,7 @@ func (builder *HttpXBuilder) SetPath(path string) *HttpXBuilder {
 func (builder *HttpXBuilder) SetPathf(path string, values ...string) *HttpXBuilder {
 	err := builder.UrlPaths.Addf(path, values)
 	if err != nil {
-		builder.Error = append(builder.Error, err)
+		builder.Error.errorsList = append(builder.Error.errorsList, err)
 	}
 	return builder
 }
@@ -140,7 +138,8 @@ func (builder *HttpXBuilder) WithStringAsBody(body string) *HttpXBuilder {
 func (builder *HttpXBuilder) WithStructAsBody(body any) *HttpXBuilder {
 	jsonData, err := json.Marshal(body)
 	if err != nil {
-		builder.Error = append(builder.Error, err)
+		jsonError := &InvalidInput{1003, err.Error(), fmt.Sprint(body)}
+		builder.Error.errorsList = append(builder.Error.errorsList, jsonError)
 		return builder
 	}
 	requestBody := io.NopCloser(bytes.NewReader(jsonData))
@@ -177,17 +176,23 @@ func (builder *HttpXBuilder) InsecureSkipVerify() *HttpXBuilder {
 }
 
 func (builder *HttpXBuilder) TLSConfigPEM(path string) *HttpXBuilder {
-	builder.TlsConfig = tlsConfigPEM(path)
+	builder.TlsConfig = builder.tlsConfigPEM(path)
 	return builder
 }
 
 func (builder *HttpXBuilder) TLSConfigPKCS12(path string, password string) *HttpXBuilder {
-	builder.TlsConfig = tlsConfigPKCS12(path, password)
+	builder.TlsConfig = builder.tlsConfigPKCS12(path, password)
 	return builder
 }
 
 func (builder *HttpXBuilder) SetProxy(proxyUrl string) *HttpXBuilder {
 	builder.ProxyUrl = proxyUrl
+	return builder
+}
+
+func (builder *HttpXBuilder) Peek() *HttpXBuilder {
+	builder.isPeekEnabled = true
+	builder.logger = log.Default()
 	return builder
 }
 
@@ -197,9 +202,9 @@ func (builder *HttpXBuilder) Build() (*HttpX, error) {
 	builder.HttpRequest.Header = builder.Headers
 
 	if (builder.HttpRequest.Method == "GET" || builder.HttpRequest.Method == "DELETE") && builder.HttpRequest.Body != nil {
-		builder.Error = append(builder.Error, errors.New("request body should not be provided for the given request method"))
+		builder.Error.errorsList = append(builder.Error.errorsList, &InvalidOperation{1002, "request body should not be provided for the given request method"})
 	} else if (builder.HttpRequest.Method == "POST" || builder.HttpRequest.Method == "PUT" || builder.HttpRequest.Method == "PATCH") && builder.HttpRequest.Body == nil {
-		builder.Error = append(builder.Error, errors.New("request body should be provided for the given request method"))
+		builder.Error.errorsList = append(builder.Error.errorsList, &InvalidOperation{1003, "request body should be provided for the given request method"})
 	}
 
 	transport := &http.Transport{
@@ -211,17 +216,27 @@ func (builder *HttpXBuilder) Build() (*HttpX, error) {
 		transport.Proxy = http.ProxyURL(proxy)
 	}
 
-	if len(builder.Error) != 0 {
-		var errorString string
-		for _, erro := range builder.Error {
-			errorString = errorString + "\n" + erro.Error()
+	if len(builder.Error.errorsList) != 0 {
+		return nil, builder.Error
+	}
+
+	if builder.isPeekEnabled {
+		builder.logger.Printf("%s %s%s\n", builder.HttpRequest.Method, builder.Url.Path, builder.Url.RawQuery)
+		builder.logger.Printf("Host: %s\n", builder.Url.Host)
+		for key, value := range builder.Headers {
+			if key == "Authorization" {
+				builder.logger.Printf("%s: %s", key, "<Token>")
+			}
+			builder.logger.Printf("%s: %s\n", key, value)
 		}
-		return nil, errors.New(errorString)
+		if builder.HttpRequest.Method == "POST" || builder.HttpRequest.Method == "PUT" || builder.HttpRequest.Method == "PATCH" {
+			body, _ := io.ReadAll(builder.HttpRequest.Body)
+			builder.logger.Printf("\n%s", string(body))
+		}
 	}
 
 	return &HttpX{
 		HttpRequest:     builder.HttpRequest,
-		Error:           builder.Error,
 		TransportConfig: transport,
 	}, nil
 }
@@ -233,15 +248,24 @@ func (httpX *HttpX) Send() (*http.Response, error) {
 	}
 	response, err := httpClient.Do(httpX.HttpRequest)
 	if err != nil {
-		return nil, err
+		errorResponse := &InvalidOperation{1005, "Error sending HTTP/HTTPS request: " + err.Error()}
+		return nil, errorResponse
 	}
+
+	if response.StatusCode > 299 {
+		responseMessage, _ := io.ReadAll(response.Body)
+		errorResponse := &HttpError{response.StatusCode, string(responseMessage)}
+		return response, errorResponse
+	}
+	httpX.HttpResponse = response
 	return response, nil
 }
 
-func tlsConfigPEM(path string) *tls.Config {
-	caCert, err := ioutil.ReadFile(path)
+func (builder *HttpXBuilder) tlsConfigPEM(path string) *tls.Config {
+	caCert, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Println("Error loading CA certificate:", err)
+		errorResponse := &InvalidInput{1004, "Error loading CA certificate: " + err.Error(), path}
+		builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
 		return nil
 	}
 	caCertPool := x509.NewCertPool()
@@ -255,16 +279,17 @@ func tlsConfigPEM(path string) *tls.Config {
 	return tlsConfig
 }
 
-func tlsConfigPKCS12(path string, password string) *tls.Config {
-	pfxData, err := ioutil.ReadFile(path)
+func (builder *HttpXBuilder) tlsConfigPKCS12(path string, password string) *tls.Config {
+	pfxData, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Errorf("Error reading PKCS12 file: %v", err)
+		errorResponse := &InvalidInput{1004, "Error reading PKCS12 file: " + err.Error(), path}
+		builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
 	}
 
-	// Replace "your_password" with the actual password for your PKCS12 file
 	blocks, err := pkcs12.ToPEM(pfxData, password)
 	if err != nil {
-		fmt.Errorf("Error decoding PKCS12: %v", err)
+		errorResponse := &InvalidInput{1004, "Error decoding PKCS12/Invalid password: " + err.Error(), path}
+		builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
 	}
 
 	var pemCert []byte
@@ -280,7 +305,8 @@ func tlsConfigPKCS12(path string, password string) *tls.Config {
 
 	cert, err := tls.X509KeyPair(pemCert, pemKey)
 	if err != nil {
-		fmt.Errorf("Error creating X509 key pair: %v", err)
+		errorResponse := &InvalidInput{1004, "Error creating X509 key pair: " + err.Error(), path}
+		builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
 	}
 
 	tlsConfig := &tls.Config{
@@ -306,14 +332,16 @@ func (builder *HttpXBuilder) getProxy() (*url.URL, bool) {
 			if proxy, exists := os.LookupEnv("HTTPS_PROXY"); exists {
 				proxy, err := url.Parse(proxy) // Replace with your proxy details
 				if err != nil {
-					builder.Error = append(builder.Error, errors.New("proxy error"))
+					errorResponse := &InvalidOperation{1004, "Error reading HTTPS_PROXY: " + err.Error()}
+					builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
 					return nil, false
 				}
 				return proxy, true
 			} else if proxy, exists := os.LookupEnv("ALL_PROXY"); exists {
 				proxy, err := url.Parse(proxy) // Replace with your proxy details
 				if err != nil {
-					builder.Error = append(builder.Error, errors.New("proxy error"))
+					errorResponse := &InvalidOperation{1004, "Error reading ALL_PROXY: " + err.Error()}
+					builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
 					return nil, false
 				}
 				return proxy, true
@@ -322,14 +350,16 @@ func (builder *HttpXBuilder) getProxy() (*url.URL, bool) {
 			if proxy, exists := os.LookupEnv("HTTP_PROXY"); exists {
 				proxy, err := url.Parse(proxy) // Replace with your proxy details
 				if err != nil {
-					builder.Error = append(builder.Error, errors.New("proxy error"))
+					errorResponse := &InvalidOperation{1004, "Error reading HTTP_PROXY: " + err.Error()}
+					builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
 					return nil, false
 				}
 				return proxy, true
 			} else if proxy, exists := os.LookupEnv("ALL_PROXY"); exists {
 				proxy, err := url.Parse(proxy) // Replace with your proxy details
 				if err != nil {
-					builder.Error = append(builder.Error, errors.New("proxy error"))
+					errorResponse := &InvalidOperation{1004, "Error reading ALL_PROXY: " + err.Error()}
+					builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
 					return nil, false
 				}
 				return proxy, true
@@ -339,10 +369,23 @@ func (builder *HttpXBuilder) getProxy() (*url.URL, bool) {
 	} else {
 		proxyUrl, err := url.Parse(builder.ProxyUrl)
 		if err != nil {
-			builder.Error = append(builder.Error, errors.New("proxy error"))
+			errorResponse := &InvalidInput{1005, "Error reading proxy input: " + err.Error(), builder.ProxyUrl}
+			builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
 			return nil, false
 		}
 		return proxyUrl, true
 	}
 	return nil, false
+}
+
+type ClientError struct {
+	errorsList []error
+}
+
+func (err *ClientError) Error() string {
+	errorString := ""
+	for _, errs := range err.errorsList {
+		errorString = errorString + errs.Error() + "\n"
+	}
+	return errorString
 }

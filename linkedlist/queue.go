@@ -17,13 +17,21 @@ func (queue *NodeList) Enqueue(value any) {
 }
 
 func (queue *NodeList) Dequeue() (any, error) {
-	return queue.RemoveFirst()
+	value, err := queue.RemoveFirst()
+	if err != nil {
+		return nil, &InvalidOperation{1001, "empty queue"}
+	}
+	return value, nil
 }
 
 func (queue *NodeList) PeekQueue() (any, error) {
-	return queue.GetFirst()
+	value, err := queue.GetFirst()
+	if err != nil {
+		return nil, &InvalidOperation{1001, "empty queue"}
+	}
+	return value, nil
 }
 
-func (queue NodeList) PrintQueue() {
+func (queue *NodeList) PrintQueue() {
 	queue.Print()
 }

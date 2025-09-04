@@ -17,13 +17,21 @@ func (stack *NodeList) Push(value any) {
 }
 
 func (stack *NodeList) Pop() (any, error) {
-	return stack.RemoveLast()
+	value, err := stack.RemoveLast()
+	if err != nil {
+		return nil, &InvalidOperation{1001, "empty queue"}
+	}
+	return value, nil
 }
 
 func (stack *NodeList) PeekStack() (any, error) {
-	return stack.GetLast()
+	value, err := stack.GetLast()
+	if err != nil {
+		return nil, &InvalidOperation{1001, "empty queue"}
+	}
+	return value, nil
 }
 
-func (stack NodeList) PrintStack() {
+func (stack *NodeList) PrintStack() {
 	stack.PrintBackwards()
 }

@@ -1,7 +1,6 @@
 package linkedlist
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 )
@@ -53,7 +52,7 @@ func (dll *NodeList) Insert(value any) {
 
 func (dll *NodeList) RemoveFirst() (any, error) {
 	if dll.size == 0 {
-		return nil, errors.New("empty linkedList")
+		return nil, &InvalidOperation{1001, "empty linkedlist"}
 	}
 	dll.mu.Lock()
 	defer dll.mu.Unlock()
@@ -74,7 +73,7 @@ func (dll *NodeList) RemoveFirst() (any, error) {
 
 func (dll *NodeList) RemoveLast() (any, error) {
 	if dll.size == 0 {
-		return nil, errors.New("empty linkedList")
+		return nil, &InvalidOperation{1001, "empty linkedlist"}
 	}
 	dll.mu.Lock()
 	defer dll.mu.Unlock()
@@ -98,9 +97,9 @@ func (dll *NodeList) Remove(index int) (any, error) {
 	defer dll.mu.Unlock()
 	if dll.size == 0 || index >= dll.size || index < 0 {
 		if dll.size == 0 {
-			return nil, errors.New("empty linkedlist")
+			return nil, &InvalidOperation{1001, "empty linkedlist"}
 		} else {
-			return nil, errors.New("invalid index")
+			return nil, &InvalidOperation{1002, "invalid index"}
 		}
 	}
 	if index == 0 {
@@ -130,21 +129,21 @@ func (dll *NodeList) Remove(index int) (any, error) {
 	return returnValue, nil
 }
 
-func (dll NodeList) Size() int {
+func (dll *NodeList) Size() int {
 	dll.mu.Lock()
 	returnSize := dll.size
 	dll.mu.Unlock()
 	return returnSize
 }
 
-func (dll NodeList) Get(index int) (any, error) {
+func (dll *NodeList) Get(index int) (any, error) {
 	dll.mu.Lock()
 	defer dll.mu.Unlock()
 	if dll.size == 0 || index >= dll.size || index < 0 {
 		if dll.size == 0 {
-			return nil, errors.New("empty linkedlist")
+			return nil, &InvalidOperation{1001, "empty linkedlist"}
 		} else {
-			return nil, errors.New("invalid index")
+			return nil, &InvalidOperation{1002, "invalid index"}
 		}
 	}
 
@@ -164,15 +163,15 @@ func (dll NodeList) Get(index int) (any, error) {
 	return returnValue, nil
 }
 
-func (dll NodeList) GetFirst() (any, error) {
+func (dll *NodeList) GetFirst() (any, error) {
 	return dll.Get(0)
 }
 
-func (dll NodeList) GetLast() (any, error) {
+func (dll *NodeList) GetLast() (any, error) {
 	return dll.Get(dll.Size() - 1)
 }
 
-func (dll NodeList) Print() {
+func (dll *NodeList) Print() {
 	dll.mu.Lock()
 	defer dll.mu.Unlock()
 	if dll.size == 0 {
@@ -191,7 +190,7 @@ func (dll NodeList) Print() {
 	fmt.Print("\n")
 }
 
-func (dll NodeList) PrintBackwards() {
+func (dll *NodeList) PrintBackwards() {
 	dll.mu.Lock()
 	defer dll.mu.Unlock()
 	if dll.size == 0 {
@@ -208,4 +207,13 @@ func (dll NodeList) PrintBackwards() {
 		node = node.previous
 	}
 	fmt.Print("\n")
+}
+
+type InvalidOperation struct {
+	code    int
+	message string
+}
+
+func (err *InvalidOperation) Error() string {
+	return fmt.Sprintf("Error %d: %s", err.code, err.message)
 }

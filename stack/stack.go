@@ -1,7 +1,6 @@
 package stack
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 )
@@ -27,7 +26,7 @@ func (stack *Stack) Pop() (any, error) {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
 	if stack.size == 0 {
-		return nil, errors.New("empty stack")
+		return nil, &InvalidOperation{1001, "empty stack"}
 	}
 	value := stack.stackArray[stack.size-1]
 	stack.size = stack.size - 1
@@ -35,11 +34,11 @@ func (stack *Stack) Pop() (any, error) {
 	return value, nil
 }
 
-func (stack Stack) Size() int {
+func (stack *Stack) Size() int {
 	return stack.size
 }
 
-func (stack Stack) Print() {
+func (stack *Stack) Print() {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
 	if stack.size == 0 {
@@ -50,4 +49,13 @@ func (stack Stack) Print() {
 		fmt.Print(value, ", ")
 	}
 	fmt.Print("\n")
+}
+
+type InvalidOperation struct {
+	code    int
+	message string
+}
+
+func (err *InvalidOperation) Error() string {
+	return fmt.Sprintf("Error %d: %s", err.code, err.message)
 }
