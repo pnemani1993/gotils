@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
+	"time"
 
 	"io"
 
@@ -25,20 +25,25 @@ type HttpX struct {
 	HttpRequest     *http.Request
 	HttpResponse    *http.Response
 	TransportConfig *http.Transport
-	wg              sync.WaitGroup
+	retryEnabled    bool
+	retryCount      int
+	retryInterval   time.Duration
+	logger          *log.Logger
 }
 
 type HttpXBuilder struct {
-	UrlPaths      Path
+	urlPaths      Path
 	Url           *url.URL
-	Headers       map[string][]string
-	HttpRequest   *http.Request
-	TlsConfig     *tls.Config
-	ProxyUrl      string
-	wg            sync.WaitGroup
-	Error         *ClientError
+	headers       map[string][]string
+	httpRequest   *http.Request
+	tlsConfig     *tls.Config
+	proxyUrl      string
+	errorsList    *ClientError
 	logger        *log.Logger
 	isPeekEnabled bool
+	retryEnabled  bool
+	retryCount    int
+	retryInterval time.Duration
 }
 
 func NewHttpXBuilder() *HttpXBuilder {
@@ -50,11 +55,11 @@ func NewHttpXBuilder() *HttpXBuilder {
 	}
 
 	return &HttpXBuilder{
-		UrlPaths:    NewPath(),
+		urlPaths:    NewPath(),
 		Url:         &url.URL{},
-		Headers:     make(map[string][]string),
-		HttpRequest: requestContext,
-		Error:       &ClientError{errorsList: make([]error, 0, 5)},
+		headers:     make(map[string][]string),
+		httpRequest: requestContext,
+		errorsList:  &ClientError{errorsList: make([]error, 0, 5)},
 	}
 }
 
@@ -76,7 +81,7 @@ func (builder *HttpXBuilder) BaseUrl(url string) *HttpXBuilder {
 	}
 
 	if index := strings.Index(url, "/"); index != -1 {
-		builder.UrlPaths.Add(url[index:])
+		builder.urlPaths.Add(url[index:])
 		url = url[:index]
 	}
 
@@ -87,18 +92,18 @@ func (builder *HttpXBuilder) BaseUrl(url string) *HttpXBuilder {
 
 // Enter the path to the URL
 func (builder *HttpXBuilder) SetPath(path string) *HttpXBuilder {
-	err := builder.UrlPaths.Add(path)
+	err := builder.urlPaths.Add(path)
 	if err != nil {
-		builder.Error.errorsList = append(builder.Error.errorsList, err)
+		builder.errorsList.errorsList = append(builder.errorsList.errorsList, err)
 	}
 	return builder
 }
 
 // Enter path with the required substitutions
 func (builder *HttpXBuilder) SetPathf(path string, values ...string) *HttpXBuilder {
-	err := builder.UrlPaths.Addf(path, values)
+	err := builder.urlPaths.Addf(path, values)
 	if err != nil {
-		builder.Error.errorsList = append(builder.Error.errorsList, err)
+		builder.errorsList.errorsList = append(builder.errorsList.errorsList, err)
 	}
 	return builder
 }
@@ -114,24 +119,24 @@ func (builder *HttpXBuilder) SetQueryParameters(key string, value string) *HttpX
 }
 
 func (builder *HttpXBuilder) SetHeader(key string, value string) *HttpXBuilder {
-	builder.Headers[key] = []string{value}
+	builder.headers[key] = []string{value}
 	return builder
 }
 
 func (builder *HttpXBuilder) Get() *HttpXBuilder {
-	builder.HttpRequest.Method = "GET"
+	builder.httpRequest.Method = "GET"
 	return builder
 }
 
 func (builder *HttpXBuilder) Post() *HttpXBuilder {
-	builder.HttpRequest.Method = "POST"
-	builder.HttpRequest.ContentLength = -1
+	builder.httpRequest.Method = "POST"
+	builder.httpRequest.ContentLength = -1
 	return builder
 }
 
 func (builder *HttpXBuilder) WithStringAsBody(body string) *HttpXBuilder {
 	requestBody := io.NopCloser(strings.NewReader(body))
-	builder.HttpRequest.Body = requestBody
+	builder.httpRequest.Body = requestBody
 	return builder
 }
 
@@ -139,54 +144,66 @@ func (builder *HttpXBuilder) WithStructAsBody(body any) *HttpXBuilder {
 	jsonData, err := json.Marshal(body)
 	if err != nil {
 		jsonError := &InvalidInput{1003, err.Error(), fmt.Sprint(body)}
-		builder.Error.errorsList = append(builder.Error.errorsList, jsonError)
+		builder.errorsList.errorsList = append(builder.errorsList.errorsList, jsonError)
 		return builder
 	}
 	requestBody := io.NopCloser(bytes.NewReader(jsonData))
-	builder.HttpRequest.Body = requestBody
+	builder.httpRequest.Body = requestBody
 	return builder
 }
 
 func (builder *HttpXBuilder) Delete() *HttpXBuilder {
-	builder.HttpRequest.Method = "DELETE"
+	builder.httpRequest.Method = "DELETE"
 	return builder
 }
 
 func (builder *HttpXBuilder) Put() *HttpXBuilder {
-	builder.HttpRequest.Method = "PUT"
-	builder.HttpRequest.ContentLength = -1
+	builder.httpRequest.Method = "PUT"
+	builder.httpRequest.ContentLength = -1
 	return builder
 }
 
 func (builder *HttpXBuilder) Patch() *HttpXBuilder {
-	builder.HttpRequest.Method = "PATCH"
+	builder.httpRequest.Method = "PATCH"
 	return builder
 }
 
 func (builder *HttpXBuilder) Head() *HttpXBuilder {
-	builder.HttpRequest.Method = "HEAD"
+	builder.httpRequest.Method = "HEAD"
+	return builder
+}
+
+func (builder *HttpXBuilder) RetryEnabled(count int) *HttpXBuilder {
+	builder.retryEnabled = true
+	builder.retryCount = count
+	builder.retryInterval = time.Millisecond * 1000
+	return builder
+}
+
+func (builder *HttpXBuilder) RetryInterval(interval int) *HttpXBuilder {
+	builder.retryInterval = time.Millisecond * time.Duration(interval)
 	return builder
 }
 
 func (builder *HttpXBuilder) InsecureSkipVerify() *HttpXBuilder {
-	builder.TlsConfig = &tls.Config{
+	builder.tlsConfig = &tls.Config{
 		InsecureSkipVerify: true,
 	}
 	return builder
 }
 
 func (builder *HttpXBuilder) TLSConfigPEM(path string) *HttpXBuilder {
-	builder.TlsConfig = builder.tlsConfigPEM(path)
+	builder.tlsConfig = builder.tlsConfigPEM(path)
 	return builder
 }
 
 func (builder *HttpXBuilder) TLSConfigPKCS12(path string, password string) *HttpXBuilder {
-	builder.TlsConfig = builder.tlsConfigPKCS12(path, password)
+	builder.tlsConfig = builder.tlsConfigPKCS12(path, password)
 	return builder
 }
 
 func (builder *HttpXBuilder) SetProxy(proxyUrl string) *HttpXBuilder {
-	builder.ProxyUrl = proxyUrl
+	builder.proxyUrl = proxyUrl
 	return builder
 }
 
@@ -197,18 +214,18 @@ func (builder *HttpXBuilder) Peek() *HttpXBuilder {
 }
 
 func (builder *HttpXBuilder) Build() (*HttpX, error) {
-	builder.Url.Path = builder.UrlPaths.GetPath()
-	builder.HttpRequest.URL = builder.Url
-	builder.HttpRequest.Header = builder.Headers
+	builder.Url.Path = builder.urlPaths.GetPath()
+	builder.httpRequest.URL = builder.Url
+	builder.httpRequest.Header = builder.headers
 
-	if (builder.HttpRequest.Method == "GET" || builder.HttpRequest.Method == "DELETE") && builder.HttpRequest.Body != nil {
-		builder.Error.errorsList = append(builder.Error.errorsList, &InvalidOperation{1002, "request body should not be provided for the given request method"})
-	} else if (builder.HttpRequest.Method == "POST" || builder.HttpRequest.Method == "PUT" || builder.HttpRequest.Method == "PATCH") && builder.HttpRequest.Body == nil {
-		builder.Error.errorsList = append(builder.Error.errorsList, &InvalidOperation{1003, "request body should be provided for the given request method"})
+	if (builder.httpRequest.Method == "GET" || builder.httpRequest.Method == "DELETE") && builder.httpRequest.Body != nil {
+		builder.errorsList.errorsList = append(builder.errorsList.errorsList, &InvalidOperation{1002, "request body should not be provided for the given request method"})
+	} else if (builder.httpRequest.Method == "POST" || builder.httpRequest.Method == "PUT" || builder.httpRequest.Method == "PATCH") && builder.httpRequest.Body == nil {
+		builder.errorsList.errorsList = append(builder.errorsList.errorsList, &InvalidOperation{1003, "request body should be provided for the given request method"})
 	}
 
 	transport := &http.Transport{
-		TLSClientConfig: builder.TlsConfig,
+		TLSClientConfig: builder.tlsConfig,
 	}
 
 	proxy, exists := builder.getProxy()
@@ -216,32 +233,96 @@ func (builder *HttpXBuilder) Build() (*HttpX, error) {
 		transport.Proxy = http.ProxyURL(proxy)
 	}
 
-	if len(builder.Error.errorsList) != 0 {
-		return nil, builder.Error
+	if len(builder.errorsList.errorsList) != 0 {
+		return nil, builder.errorsList
 	}
 
 	if builder.isPeekEnabled {
-		builder.logger.Printf("%s %s%s\n", builder.HttpRequest.Method, builder.Url.Path, builder.Url.RawQuery)
+		builder.logger.Printf("%s %s%s\n", builder.httpRequest.Method, builder.Url.Path, builder.Url.RawQuery)
 		builder.logger.Printf("Host: %s\n", builder.Url.Host)
-		for key, value := range builder.Headers {
+		for key, value := range builder.headers {
 			if key == "Authorization" {
 				builder.logger.Printf("%s: %s", key, "<Token>")
 			}
 			builder.logger.Printf("%s: %s\n", key, value)
 		}
-		if builder.HttpRequest.Method == "POST" || builder.HttpRequest.Method == "PUT" || builder.HttpRequest.Method == "PATCH" {
-			body, _ := io.ReadAll(builder.HttpRequest.Body)
+		if builder.httpRequest.Method == "POST" || builder.httpRequest.Method == "PUT" || builder.httpRequest.Method == "PATCH" {
+			body, _ := io.ReadAll(builder.httpRequest.Body)
 			builder.logger.Printf("\n%s", string(body))
 		}
 	}
 
 	return &HttpX{
-		HttpRequest:     builder.HttpRequest,
+		HttpRequest:     builder.httpRequest,
 		TransportConfig: transport,
+		retryEnabled:    builder.retryEnabled,
+		retryCount:      builder.retryCount,
+		retryInterval:   builder.retryInterval,
 	}, nil
 }
 
 func (httpX *HttpX) Send() (*http.Response, error) {
+
+	httpX.logger = log.Default()
+
+	httpClient := &http.Client{
+		Transport: httpX.TransportConfig,
+	}
+	var response *http.Response
+	var err error
+	count := 0
+
+	if httpX.retryEnabled {
+		for count = range httpX.retryCount {
+			response, err = httpClient.Do(httpX.HttpRequest)
+			if err != nil {
+				time.Sleep(httpX.retryInterval)
+				httpX.logger.Printf("Retrying after %d attempt", count)
+				continue
+			}
+
+			if response.StatusCode > 299 {
+				time.Sleep(httpX.retryInterval)
+				httpX.logger.Printf("Retrying after %d attempt", count)
+				continue
+			}
+			break
+		}
+	} else {
+		response, err = httpClient.Do(httpX.HttpRequest)
+	}
+
+	if err != nil {
+		errorResponse := &InvalidOperation{1005, "Error sending HTTP/HTTPS request: " + err.Error()}
+		if count > 0 {
+			httpX.logger.Printf("Request failed after &d retries", count)
+		}
+		httpX.HttpResponse = nil
+		return nil, errorResponse
+	}
+
+	httpX.HttpResponse = response
+
+	if response.StatusCode > 299 {
+		responseMessage, _ := io.ReadAll(response.Body)
+		errorResponse := &HttpError{response.StatusCode, string(responseMessage)}
+		if count > 0 {
+			httpX.logger.Printf("Request failed after &d retries", count)
+		}
+		return response, errorResponse
+	}
+
+	httpX.logger.Printf("Http Request successful: %s", httpX.HttpRequest.URL.RawPath)
+	return response, nil
+}
+
+func (httpX *HttpX) SendAsync() *HttpFuture {
+	httpFuture := &HttpFuture{responseChannel: make(chan *http.Response)}
+	go httpX.sendingAsync(httpFuture)
+	return httpFuture
+}
+
+func (httpX *HttpX) sendingAsync(httpFuture *HttpFuture) {
 
 	httpClient := &http.Client{
 		Transport: httpX.TransportConfig,
@@ -249,23 +330,28 @@ func (httpX *HttpX) Send() (*http.Response, error) {
 	response, err := httpClient.Do(httpX.HttpRequest)
 	if err != nil {
 		errorResponse := &InvalidOperation{1005, "Error sending HTTP/HTTPS request: " + err.Error()}
-		return nil, errorResponse
+		httpFuture.responseChannel <- nil
+		httpFuture.err = errorResponse
+		return
 	}
 
 	if response.StatusCode > 299 {
 		responseMessage, _ := io.ReadAll(response.Body)
 		errorResponse := &HttpError{response.StatusCode, string(responseMessage)}
-		return response, errorResponse
+		httpFuture.responseChannel <- response
+		httpFuture.err = errorResponse
+		return
 	}
 	httpX.HttpResponse = response
-	return response, nil
+	httpFuture.responseChannel <- response
+	httpFuture.err = nil
 }
 
 func (builder *HttpXBuilder) tlsConfigPEM(path string) *tls.Config {
 	caCert, err := os.ReadFile(path)
 	if err != nil {
 		errorResponse := &InvalidInput{1004, "Error loading CA certificate: " + err.Error(), path}
-		builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
+		builder.errorsList.errorsList = append(builder.errorsList.errorsList, errorResponse)
 		return nil
 	}
 	caCertPool := x509.NewCertPool()
@@ -283,13 +369,13 @@ func (builder *HttpXBuilder) tlsConfigPKCS12(path string, password string) *tls.
 	pfxData, err := os.ReadFile(path)
 	if err != nil {
 		errorResponse := &InvalidInput{1004, "Error reading PKCS12 file: " + err.Error(), path}
-		builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
+		builder.errorsList.errorsList = append(builder.errorsList.errorsList, errorResponse)
 	}
 
 	blocks, err := pkcs12.ToPEM(pfxData, password)
 	if err != nil {
 		errorResponse := &InvalidInput{1004, "Error decoding PKCS12/Invalid password: " + err.Error(), path}
-		builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
+		builder.errorsList.errorsList = append(builder.errorsList.errorsList, errorResponse)
 	}
 
 	var pemCert []byte
@@ -306,7 +392,7 @@ func (builder *HttpXBuilder) tlsConfigPKCS12(path string, password string) *tls.
 	cert, err := tls.X509KeyPair(pemCert, pemKey)
 	if err != nil {
 		errorResponse := &InvalidInput{1004, "Error creating X509 key pair: " + err.Error(), path}
-		builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
+		builder.errorsList.errorsList = append(builder.errorsList.errorsList, errorResponse)
 	}
 
 	tlsConfig := &tls.Config{
@@ -317,7 +403,7 @@ func (builder *HttpXBuilder) tlsConfigPKCS12(path string, password string) *tls.
 }
 
 func (builder *HttpXBuilder) getProxy() (*url.URL, bool) {
-	if len(builder.ProxyUrl) == 0 {
+	if len(builder.proxyUrl) == 0 {
 
 		if no_proxy, exists := os.LookupEnv("NO_PROXY"); exists {
 			no_proxy_urls := strings.Split(no_proxy, ",")
@@ -333,7 +419,7 @@ func (builder *HttpXBuilder) getProxy() (*url.URL, bool) {
 				proxy, err := url.Parse(proxy) // Replace with your proxy details
 				if err != nil {
 					errorResponse := &InvalidOperation{1004, "Error reading HTTPS_PROXY: " + err.Error()}
-					builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
+					builder.errorsList.errorsList = append(builder.errorsList.errorsList, errorResponse)
 					return nil, false
 				}
 				return proxy, true
@@ -341,7 +427,7 @@ func (builder *HttpXBuilder) getProxy() (*url.URL, bool) {
 				proxy, err := url.Parse(proxy) // Replace with your proxy details
 				if err != nil {
 					errorResponse := &InvalidOperation{1004, "Error reading ALL_PROXY: " + err.Error()}
-					builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
+					builder.errorsList.errorsList = append(builder.errorsList.errorsList, errorResponse)
 					return nil, false
 				}
 				return proxy, true
@@ -351,7 +437,7 @@ func (builder *HttpXBuilder) getProxy() (*url.URL, bool) {
 				proxy, err := url.Parse(proxy) // Replace with your proxy details
 				if err != nil {
 					errorResponse := &InvalidOperation{1004, "Error reading HTTP_PROXY: " + err.Error()}
-					builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
+					builder.errorsList.errorsList = append(builder.errorsList.errorsList, errorResponse)
 					return nil, false
 				}
 				return proxy, true
@@ -359,7 +445,7 @@ func (builder *HttpXBuilder) getProxy() (*url.URL, bool) {
 				proxy, err := url.Parse(proxy) // Replace with your proxy details
 				if err != nil {
 					errorResponse := &InvalidOperation{1004, "Error reading ALL_PROXY: " + err.Error()}
-					builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
+					builder.errorsList.errorsList = append(builder.errorsList.errorsList, errorResponse)
 					return nil, false
 				}
 				return proxy, true
@@ -367,10 +453,10 @@ func (builder *HttpXBuilder) getProxy() (*url.URL, bool) {
 		}
 
 	} else {
-		proxyUrl, err := url.Parse(builder.ProxyUrl)
+		proxyUrl, err := url.Parse(builder.proxyUrl)
 		if err != nil {
-			errorResponse := &InvalidInput{1005, "Error reading proxy input: " + err.Error(), builder.ProxyUrl}
-			builder.Error.errorsList = append(builder.Error.errorsList, errorResponse)
+			errorResponse := &InvalidInput{1005, "Error reading proxy input: " + err.Error(), builder.proxyUrl}
+			builder.errorsList.errorsList = append(builder.errorsList.errorsList, errorResponse)
 			return nil, false
 		}
 		return proxyUrl, true
@@ -388,4 +474,24 @@ func (err *ClientError) Error() string {
 		errorString = errorString + errs.Error() + "\n"
 	}
 	return errorString
+}
+
+type HttpFuture struct {
+	responseChannel chan *http.Response
+	err             error
+}
+
+func (future *HttpFuture) Get() (*http.Response, error) {
+	response := <-future.responseChannel
+
+	if future.err != nil {
+		return response, future.err
+	}
+
+	if response.StatusCode > 299 {
+		responseMessage, _ := io.ReadAll(response.Body)
+		errorResponse := &HttpError{response.StatusCode, string(responseMessage)}
+		return response, errorResponse
+	}
+	return response, nil
 }
