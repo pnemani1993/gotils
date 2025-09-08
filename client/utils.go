@@ -2,6 +2,8 @@ package client
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 )
 
@@ -87,4 +89,43 @@ type HttpError struct {
 
 func (err *HttpError) Error() string {
 	return fmt.Sprintf("Error %d: %s", err.statusCode, err.message)
+}
+
+type ClientError struct {
+	errorsList []error
+}
+
+func (err *ClientError) Error() string {
+	errorString := ""
+	for _, errs := range err.errorsList {
+		errorString = errorString + errs.Error() + "\n"
+	}
+	return errorString
+}
+
+type HttpFuture struct {
+	responseChannel chan int
+	err             error
+	isDone          bool
+	response        *http.Response
+}
+
+func (future *HttpFuture) Get() (*http.Response, error) {
+
+	<-future.responseChannel
+
+	if future.err != nil {
+		return future.response, future.err
+	}
+
+	if future.response.StatusCode > 299 {
+		responseMessage, _ := io.ReadAll(future.response.Body)
+		errorResponse := &HttpError{future.response.StatusCode, string(responseMessage)}
+		return future.response, errorResponse
+	}
+	return future.response, nil
+}
+
+func (future *HttpFuture) IsDone() bool {
+	return future.isDone
 }
